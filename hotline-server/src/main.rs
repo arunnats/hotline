@@ -1,13 +1,16 @@
 use tokio::net::TcpListener;
-use tokio::sync::broadcast;
+use tokio::sync::{broadcast, Mutex};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use chrono::{DateTime, Local, Utc};
 use anyhow::{Result, Context};
+use std::collections::HashMap;
+use std::net::SocketAddr;
+use std::sync::Arc;
 
 #[derive(Clone, Debug)]
 struct Message {
     content: String,
-    sender: std::net::SocketAddr,
+    sender: String,
     timestamp: DateTime<Utc>,
 }
 
@@ -21,6 +24,7 @@ async fn main() -> Result<()> {
         .context("Failed to bind to address")?;
     
     let (tx, _) = broadcast::channel::<Message>(100);
+    let usernames = Arc::new(Mutex::new(HashMap::<SocketAddr, String>::new()));
 
     println!("Server running! Waiting for connections...");
 
@@ -34,6 +38,7 @@ async fn main() -> Result<()> {
 
         let tx = tx.clone();
         let mut rx = tx.subscribe();
+        let usernames = Arc::clone(&usernames);
 
         tokio::spawn(async move {
             let (reader, mut writer) = socket.into_split();
@@ -48,17 +53,38 @@ async fn main() -> Result<()> {
                     result = reader.read_line(&mut line) => {
                         if result.context("Failed to read line from client")? == 0 {
                             println!("Client disconnected: {}", addr);
+                            usernames.lock().await.remove(&addr);
                             break;
                         }
 
-                        let msg = Message {
-                            content: line.clone(),
-                            sender: addr,
-                            timestamp: Utc::now(),
-                        };
+                        let trimmed = line.trim();
 
-                        if let Err(e) = tx.send(msg) {
-                            eprintln!("Failed to broadcast message: {}", e);
+                        // Handle /username:<name> command
+                        if trimmed.starts_with("/username:") {
+                            let name = trimmed
+                                .strip_prefix("/username:")
+                                .unwrap_or("")
+                                .trim()
+                                .to_string();
+                            if !name.is_empty() {
+                                usernames.lock().await.insert(addr, name.clone());
+                                writer.write_all(format!("Username set to '{}'\n", name).as_bytes()).await?;
+                            } else {
+                                writer.write_all(b"Invalid username command\n").await?;
+                            }
+                        } else if !trimmed.is_empty() {
+                            let usernames = usernames.lock().await;
+                            let sender_name = usernames.get(&addr).cloned().unwrap_or(addr.to_string());
+
+                            let msg = Message {
+                                content: line.clone(),
+                                sender: sender_name,
+                                timestamp: Utc::now(),
+                            };
+
+                            if let Err(e) = tx.send(msg) {
+                                eprintln!("Failed to broadcast message: {}", e);
+                            }
                         }
 
                         line.clear();
