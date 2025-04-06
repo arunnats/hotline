@@ -1,0 +1,9 @@
+[package]
+name = "hotline-client"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+tokio = { version = "1.44.1", features = ["full"] }
+chrono = "0.4"
+anyhow = "1.0"
