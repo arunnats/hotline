@@ -1,10 +1,18 @@
 use tokio::net::TcpStream;
 use tokio::io::{self, AsyncBufReadExt, AsyncWriteExt, BufReader, BufWriter};
-use chrono::{Local, Utc, DateTime};
+use chrono::{DateTime, Local, Utc};
 use anyhow::Result;
+use serde::Deserialize;
 use std::collections::VecDeque;
 use std::time::{Duration, Instant};
-use tokio::time::sleep;
+use colored::*;
+
+#[derive(Deserialize)]
+struct Message {
+    content: String,
+    sender: String,
+    timestamp: DateTime<Utc>,
+}
 
 #[tokio::main]
 async fn main() -> Result<()> {
@@ -17,13 +25,13 @@ async fn main() -> Result<()> {
     // Ask for server address
     stdout.write_all(b"Enter server address (IP or domain): ").await?;
     stdout.flush().await?;
-    let server_addr = lines.next_line().await?.unwrap_or_default();
+    let server_addr: String = lines.next_line().await?.unwrap_or_default();
 
     // Ask for port
     stdout.write_all(b"Enter server port (default 8080): ").await?;
     stdout.flush().await?;
-    let port_input = lines.next_line().await?.unwrap_or_default();
-    let port = if port_input.trim().is_empty() {
+    let port_input: String = lines.next_line().await?.unwrap_or_default();
+    let port: String = if port_input.trim().is_empty() {
         "8080".to_string()
     } else {
         port_input.trim().to_string()
@@ -32,14 +40,14 @@ async fn main() -> Result<()> {
     // Ask for username
     stdout.write_all(b"Enter an optional username (press Enter to skip): ").await?;
     stdout.flush().await?;
-    let username = lines.next_line().await?.unwrap_or_default().trim().to_string();
-    let my_username = username.clone();
+    let username: String = lines.next_line().await?.unwrap_or_default().trim().to_string();
+    let my_username: String = username.clone();
     
-    let address = format!("{}:{}", server_addr.trim(), port);
+    let address: String = format!("{}:{}", server_addr.trim(), port);
     println!("Connecting to {}...", address);
 
-    let stream = TcpStream::connect(&address).await?;
-    println!("Connected successfully!");
+    let stream: TcpStream = TcpStream::connect(&address).await?;
+    println!("{}","Connected successfully".blue());
 
     let (reader, writer) = stream.into_split();
     let mut server_reader = BufReader::new(reader);
@@ -55,11 +63,26 @@ async fn main() -> Result<()> {
         loop {
             match server_reader.read_line(&mut line).await {
                 Ok(0) => {
-                    println!("\nServer closed the connection.");
+                    println!("{}","\nServer closed the connection.".blue());
                     break;
                 }
                 Ok(_) => {
-                    print!("{}", line);
+                    let trimmed = line.trim();
+                    if trimmed.starts_with('{') {
+                        if let Ok(msg) = serde_json::from_str::<Message>(trimmed) {
+                            if msg.sender == my_username {
+                                line.clear();
+                                continue; // skip own message
+                            }
+                            let local_time = msg.timestamp.with_timezone(&Local).format("%H:%M:%S");
+                            println!("[{}] {}: {}", local_time.to_string().yellow(), msg.sender.green().bold(), msg.content.cyan());
+                        } else {
+                            // fallback if it's a simple info/error message
+                            println!("{}", trimmed.blue());
+                        }
+                    } else {
+                        println!("{}", trimmed);
+                    }
                     line.clear();
                 }
                 Err(e) => {
@@ -70,7 +93,7 @@ async fn main() -> Result<()> {
         }
     });
 
-    println!("Chat session started. Type your messages and press Enter to send. Type `/quit` to disconnect.");
+    println!("{}","You can now chat! Type and press Enter. Type `/quit` to exit.".blue());
 
     let stdin = BufReader::new(io::stdin());
     let mut input_lines = stdin.lines();
@@ -85,7 +108,7 @@ async fn main() -> Result<()> {
             let trimmed = line.trim();
 
             if trimmed == "/quit" {
-                println!("Disconnecting from server...");
+                println!("Exiting chat.");
                 break;
             }
 
@@ -118,7 +141,7 @@ async fn main() -> Result<()> {
             }
 
             let timestamp = Local::now().format("%H:%M:%S").to_string();
-            println!("[{}] You: {}", timestamp, trimmed);
+            println!("[{}] {} {}", timestamp.yellow(), "You:".green().bold(), trimmed.cyan());
 
             server_writer.write_all(format!("{}\n", trimmed).as_bytes()).await?;
             server_writer.flush().await?;
