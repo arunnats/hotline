@@ -1,16 +1,18 @@
 use tokio::net::TcpStream;
-use tokio::io::{self, AsyncBufReadExt, AsyncWriteExt, BufReader, BufWriter};
-use chrono::{DateTime, Local, Utc};
+use tokio::io::{ self, AsyncBufReadExt, AsyncWriteExt, BufReader, BufWriter };
+use chrono::{ DateTime, Local, Utc };
 use anyhow::Result;
 use serde::Deserialize;
 use std::collections::VecDeque;
-use std::time::{Duration, Instant};
+use std::time::{ Duration, Instant };
 use colored::*;
+use std::net::SocketAddr;
 
 #[derive(Deserialize)]
 struct Message {
     content: String,
     sender: String,
+    username: Option<String>,
     timestamp: DateTime<Utc>,
 }
 
@@ -41,13 +43,15 @@ async fn main() -> Result<()> {
     stdout.write_all(b"Enter an optional username (press Enter to skip): ").await?;
     stdout.flush().await?;
     let username: String = lines.next_line().await?.unwrap_or_default().trim().to_string();
-    let my_username: String = username.clone();
-    
+
     let address: String = format!("{}:{}", server_addr.trim(), port);
     println!("Connecting to {}...", address);
 
     let stream: TcpStream = TcpStream::connect(&address).await?;
-    println!("{}","Connected successfully".blue());
+    let my_socket_addr: SocketAddr = stream.local_addr()?; // <--- This is important
+    let my_addr_str = my_socket_addr.to_string(); // Save to compare against `sender`
+
+    println!("{}", format!("Connected as {}", my_addr_str).blue());
 
     let (reader, writer) = stream.into_split();
     let mut server_reader = BufReader::new(reader);
@@ -57,46 +61,57 @@ async fn main() -> Result<()> {
     server_writer.write_all(format!("/username:{}\n", username).as_bytes()).await?;
     server_writer.flush().await?;
 
-    // Spawn task for reading from server
-    tokio::spawn(async move {
-        let mut line = String::new();
-        loop {
-            match server_reader.read_line(&mut line).await {
-                Ok(0) => {
-                    println!("{}","\nServer closed the connection.".blue());
-                    break;
-                }
-                Ok(_) => {
-                    let trimmed = line.trim();
-                    if trimmed.starts_with('{') {
-                        if let Ok(msg) = serde_json::from_str::<Message>(trimmed) {
-                            if msg.sender == my_username {
-                                line.clear();
-                                continue; // skip own message
-                            }
-                            let local_time = msg.timestamp.with_timezone(&Local).format("%H:%M:%S");
-                            println!("[{}] {}: {}", local_time.to_string().yellow(), msg.sender.green().bold(), msg.content.cyan());
-                        } else {
-                            // fallback if it's a simple info/error message
-                            println!("{}", trimmed.blue());
-                        }
-                    } else {
-                        println!("{}", trimmed);
+    // Task to handle reading from server
+    tokio::spawn({
+        let my_addr_str = my_addr_str.clone();
+        async move {
+            let mut line = String::new();
+            loop {
+                match server_reader.read_line(&mut line).await {
+                    Ok(0) => {
+                        println!("{}", "\nServer closed the connection.".blue());
+                        break;
                     }
-                    line.clear();
-                }
-                Err(e) => {
-                    eprintln!("Error reading from server: {}", e);
-                    break;
+                    Ok(_) => {
+                        let trimmed = line.trim();
+
+                        if trimmed.starts_with('{') {
+                            if let Ok(msg) = serde_json::from_str::<Message>(trimmed) {
+                                if msg.sender == my_addr_str {
+                                    line.clear();
+                                    continue; // Skip own message
+                                }
+                                let local_time = msg.timestamp
+                                    .with_timezone(&Local)
+                                    .format("%H:%M:%S");
+                                let sender_name = msg.username.unwrap_or(msg.sender);
+
+                                println!(
+                                    "[{}] {}: {}",
+                                    local_time.to_string().yellow(),
+                                    sender_name.green().bold(),
+                                    msg.content.cyan()
+                                );
+                            } else {
+                                println!("{}", trimmed.blue());
+                            }
+                        } else {
+                            println!("{}", trimmed);
+                        }
+                        line.clear();
+                    }
+                    Err(e) => {
+                        eprintln!("Error reading from server: {}", e);
+                        break;
+                    }
                 }
             }
         }
     });
 
-    println!("{}","You can now chat! Type and press Enter. Type `/quit` to exit.".blue());
+    println!("{}", "You can now chat! Type and press Enter. Type `/quit` to exit.".blue());
 
-    let stdin = BufReader::new(io::stdin());
-    let mut input_lines = stdin.lines();
+    let mut input_lines = lines; // Continue using same stdin
     let mut msg_times: VecDeque<Instant> = VecDeque::new();
     let mut timeout_until: Option<Instant> = None;
 
@@ -130,12 +145,14 @@ async fn main() -> Result<()> {
 
             // Track messages within 5 seconds window
             msg_times.push_back(now);
-            while msg_times.front().map_or(false, |t| now.duration_since(*t) > Duration::from_secs(5)) {
+            while
+                msg_times.front().map_or(false, |t| now.duration_since(*t) > Duration::from_secs(5))
+            {
                 msg_times.pop_front();
             }
 
             if msg_times.len() > 10 {
-                println!("You are sending messages too fast! You are in timeout for 10 seconds.");
+                println!("You are sending messages too fast! Timeout for 10 seconds.");
                 timeout_until = Some(Instant::now() + Duration::from_secs(10));
                 continue;
             }
@@ -149,5 +166,6 @@ async fn main() -> Result<()> {
             break;
         }
     }
+
     Ok(())
 }

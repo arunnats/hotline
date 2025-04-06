@@ -1,17 +1,18 @@
 use tokio::net::TcpListener;
-use tokio::sync::{broadcast, Mutex};
-use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
-use chrono::{DateTime, Utc};
-use anyhow::{Result, Context};
+use tokio::sync::{ broadcast, Mutex };
+use tokio::io::{ AsyncBufReadExt, AsyncWriteExt, BufReader };
+use chrono::{ DateTime, Utc };
+use anyhow::{ Result, Context };
 use std::collections::HashMap;
 use std::net::SocketAddr;
 use std::sync::Arc;
-use serde::{Serialize, Deserialize};
+use serde::{ Serialize, Deserialize };
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 struct Message {
     content: String,
     sender: String,
+    username: Option<String>,
     timestamp: DateTime<Utc>,
 }
 
@@ -20,9 +21,7 @@ async fn main() -> Result<()> {
     let addr = "0.0.0.0:8080";
     println!("Starting server on {}", addr);
 
-    let listener = TcpListener::bind(addr)
-        .await
-        .context("Failed to bind to address")?;
+    let listener: TcpListener = TcpListener::bind(addr).await.context("Failed to bind to address")?;
 
     let (tx, _) = broadcast::channel::<Message>(100);
     let usernames = Arc::new(Mutex::new(HashMap::<SocketAddr, String>::new()));
@@ -42,16 +41,27 @@ async fn main() -> Result<()> {
             let mut reader = BufReader::new(reader);
             let mut line = String::new();
 
-            writer
-                .write_all(format!("{{\"info\": \"Connected to chat server as {}\"}}\n", addr).as_bytes())
-                .await?;
+            writer.write_all(
+                format!("{{\"info\": \"Connected to chat server as {}\"}}\n", addr).as_bytes()
+            ).await?;
 
             loop {
                 tokio::select! {
                     result = reader.read_line(&mut line) => {
                         if result? == 0 {
-                            println!("Client disconnected: {}", addr);
-                            usernames.lock().await.remove(&addr);
+                            // Client disconnected
+                            let mut usernames_lock = usernames.lock().await;
+                            if let Some(name) = usernames_lock.remove(&addr) {
+                                let leave_msg = Message {
+                                    content: format!("{} has left the chat", name),
+                                    sender: "Server".to_string(),
+                                    username: Some(name.clone()),
+                                    timestamp: Utc::now(),
+                                };
+                                let _ = tx.send(leave_msg);
+                            } else {
+                                println!("Client disconnected: {}", addr);
+                            }
                             break;
                         }
 
@@ -60,18 +70,30 @@ async fn main() -> Result<()> {
                         if trimmed.starts_with("/username:") {
                             let name = trimmed.strip_prefix("/username:").unwrap_or("").trim().to_string();
                             if !name.is_empty() {
-                                usernames.lock().await.insert(addr, name.clone());
+                                let mut usernames_lock = usernames.lock().await;
+                                usernames_lock.insert(addr, name.clone());
+
                                 writer.write_all(format!("{{\"info\": \"Username set to '{}'\"}}\n", name).as_bytes()).await?;
+
+                                let join_msg = Message {
+                                    content: format!("{} has joined the chat", name),
+                                    sender: "Server".to_string(),
+                                    username: Some(name.clone()),
+                                    timestamp: Utc::now(),
+                                };
+                                let _ = tx.send(join_msg);
                             } else {
                                 writer.write_all(b"{\"error\": \"Invalid username command\"}\n").await?;
                             }
                         } else if !trimmed.is_empty() {
                             let usernames = usernames.lock().await;
-                            let sender = usernames.get(&addr).cloned().unwrap_or_else(|| addr.to_string());
+                            let sender = addr.to_string();
+                            let username = usernames.get(&addr).cloned();
 
                             let msg = Message {
                                 content: trimmed.to_string(),
                                 sender,
+                                username,
                                 timestamp: Utc::now(),
                             };
 
@@ -82,6 +104,7 @@ async fn main() -> Result<()> {
 
                         line.clear();
                     }
+
                     result = rx.recv() => {
                         if let Ok(msg) = result {
                             let json = serde_json::to_string(&msg)?;
