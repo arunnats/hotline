@@ -1,7 +1,16 @@
 [package]
-name = "hotline-client"
+name = "hotline"
 version = "0.1.0"
 edition = "2024"
+authors = ["Arun Nats arunnats.com"]
+
+[package.metadata.deb]
+maintainer = "Arun Nats arunnats.com"
+depends = ""
+extended-description = """TCP cmd-line chat client in Rust."""
+assets = [
+  ["target/release/hotline", "usr/bin/hotline", "755"],
+]
 
 [dependencies]
 tokio = { version = "1.44.1", features = ["full"] }

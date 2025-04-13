@@ -1,12 +1,12 @@
-use tokio::net::TcpStream;
-use tokio::io::{ self, AsyncBufReadExt, AsyncWriteExt, BufReader, BufWriter };
-use chrono::{ DateTime, Local, Utc };
 use anyhow::Result;
+use chrono::{DateTime, Local, Utc};
+use colored::*;
 use serde::Deserialize;
 use std::collections::VecDeque;
-use std::time::{ Duration, Instant };
-use colored::*;
 use std::net::SocketAddr;
+use std::time::{Duration, Instant};
+use tokio::io::{self, AsyncBufReadExt, AsyncWriteExt, BufReader, BufWriter};
+use tokio::net::TcpStream;
 
 #[derive(Deserialize)]
 struct Message {
@@ -25,12 +25,16 @@ async fn main() -> Result<()> {
     let mut lines = stdin.lines();
 
     // Ask for server address
-    stdout.write_all(b"Enter server address (IP or domain): ").await?;
+    stdout
+        .write_all(b"Enter server address (IP or domain): ")
+        .await?;
     stdout.flush().await?;
     let server_addr: String = lines.next_line().await?.unwrap_or_default();
 
     // Ask for port
-    stdout.write_all(b"Enter server port (default 8080): ").await?;
+    stdout
+        .write_all(b"Enter server port (default 8080): ")
+        .await?;
     stdout.flush().await?;
     let port_input: String = lines.next_line().await?.unwrap_or_default();
     let port: String = if port_input.trim().is_empty() {
@@ -40,9 +44,16 @@ async fn main() -> Result<()> {
     };
 
     // Ask for username
-    stdout.write_all(b"Enter an optional username (press Enter to skip): ").await?;
+    stdout
+        .write_all(b"Enter an optional username (press Enter to skip): ")
+        .await?;
     stdout.flush().await?;
-    let username: String = lines.next_line().await?.unwrap_or_default().trim().to_string();
+    let username: String = lines
+        .next_line()
+        .await?
+        .unwrap_or_default()
+        .trim()
+        .to_string();
 
     let address: String = format!("{}:{}", server_addr.trim(), port);
     println!("Connecting to {}...", address);
@@ -58,7 +69,9 @@ async fn main() -> Result<()> {
     let mut server_writer = BufWriter::new(writer);
 
     // Send username (even if empty)
-    server_writer.write_all(format!("/username:{}\n", username).as_bytes()).await?;
+    server_writer
+        .write_all(format!("/username:{}\n", username).as_bytes())
+        .await?;
     server_writer.flush().await?;
 
     // Task to handle reading from server
@@ -81,9 +94,8 @@ async fn main() -> Result<()> {
                                     line.clear();
                                     continue; // Skip own message
                                 }
-                                let local_time = msg.timestamp
-                                    .with_timezone(&Local)
-                                    .format("%H:%M:%S");
+                                let local_time =
+                                    msg.timestamp.with_timezone(&Local).format("%H:%M:%S");
                                 let sender_name = msg.username.unwrap_or(msg.sender);
 
                                 println!(
@@ -109,7 +121,10 @@ async fn main() -> Result<()> {
         }
     });
 
-    println!("{}", "You can now chat! Type and press Enter. Type `/quit` to exit.".blue());
+    println!(
+        "{}",
+        "You can now chat! Type and press Enter. Type `/quit` to exit.".blue()
+    );
 
     let mut input_lines = lines; // Continue using same stdin
     let mut msg_times: VecDeque<Instant> = VecDeque::new();
@@ -136,7 +151,10 @@ async fn main() -> Result<()> {
             if let Some(timeout) = timeout_until {
                 if now < timeout {
                     let remaining = timeout.duration_since(now);
-                    println!("You are on timeout for {:.1} more seconds", remaining.as_secs_f32());
+                    println!(
+                        "You are on timeout for {:.1} more seconds",
+                        remaining.as_secs_f32()
+                    );
                     continue;
                 } else {
                     timeout_until = None;
@@ -145,8 +163,9 @@ async fn main() -> Result<()> {
 
             // Track messages within 5 seconds window
             msg_times.push_back(now);
-            while
-                msg_times.front().map_or(false, |t| now.duration_since(*t) > Duration::from_secs(5))
+            while msg_times
+                .front()
+                .map_or(false, |t| now.duration_since(*t) > Duration::from_secs(5))
             {
                 msg_times.pop_front();
             }
@@ -158,9 +177,16 @@ async fn main() -> Result<()> {
             }
 
             let timestamp = Local::now().format("%H:%M:%S").to_string();
-            println!("[{}] {} {}", timestamp.yellow(), "You:".green().bold(), trimmed.cyan());
+            println!(
+                "[{}] {} {}",
+                timestamp.yellow(),
+                "You:".green().bold(),
+                trimmed.cyan()
+            );
 
-            server_writer.write_all(format!("{}\n", trimmed).as_bytes()).await?;
+            server_writer
+                .write_all(format!("{}\n", trimmed).as_bytes())
+                .await?;
             server_writer.flush().await?;
         } else {
             break;
