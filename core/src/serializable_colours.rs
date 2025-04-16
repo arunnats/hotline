@@ -13,3 +13,8 @@ pub static YELLOW_COLOR: SerializableColor = SerializableColor {
     g: 255,
     b: 0,
 };
+pub static WHITE_COLOR: SerializableColor = SerializableColor {
+    r: 255,
+    g: 255,
+    b: 255,
+};

@@ -1,23 +1,10 @@
-pub mod chat_client_tui;
+mod imports;
+mod utils;
 
-use std::sync::mpsc as std_mpsc;
-use std::thread;
+pub use imports::*;
+pub use utils::*;
 
-use chrono::Local;
-use cursive::CbSink;
-use cursive::align::HAlign;
-use cursive::theme::{BaseColor, Color, Palette, PaletteColor, Theme};
-use cursive::traits::*;
-use cursive::utils::markup::StyledString;
-use cursive::views::{Dialog, EditView, LinearLayout, TextContent, TextView};
-use tokio::runtime::Runtime;
-use tokio::sync::mpsc;
-
-use core::client_backend::run_client_backend;
-use core::serializable_colours::*;
-use core::types::{ChatMessage, OutputEvent, SystemEvent, TextLine};
-
-fn main() {
+pub fn run_chat_tui() {
     // Create standard synchronous channels for UI to communicate with the async thread
     let (ui_to_async_tx, ui_to_async_rx) = std_mpsc::channel::<String>();
     let (async_to_ui_tx, async_to_ui_rx) = std_mpsc::channel::<OutputEvent>();
@@ -146,57 +133,6 @@ fn chat_tui(input_tx: std_mpsc::Sender<String>, output_rx: std_mpsc::Receiver<Ou
     siv.run();
 }
 
-fn print_textline_to_output(siv_sink: &CbSink, content: &TextContent, textline: TextLine) {
-    let content = content.clone();
-    let sink = siv_sink.clone();
-    sink.send(Box::new(move |_| {
-        let mut styled = StyledString::new();
-        if let Some(serializable_color) = textline.color {
-            // Convert SerializableColor to cursive::theme::Color
-            let color: Color = serializable_color.into();
-            styled.append_styled(format!("{}\n", textline.text), color);
-        } else {
-            styled.append_styled(format!("{}\n", textline.text), Color::TerminalDefault);
-        }
-        content.append(styled);
-    }))
-    .unwrap();
-}
-
-fn print_chat_message_to_output(siv_sink: &CbSink, content: &TextContent, message: ChatMessage) {
-    let content = content.clone();
-    let sink = siv_sink.clone();
-
-    sink.send(Box::new(move |_| {
-        let mut styled = StyledString::new();
-
-        // Format timestamp
-        let local_time = message.timestamp.with_timezone(&Local).format("%H:%M:%S");
-        styled.append_styled(
-            format!("[{}] ", local_time),
-            Color::Light(BaseColor::Yellow),
-        );
-
-        // Format sender name
-        let sender_name = message.username.unwrap_or(message.sender);
-        let display_name = if message.is_self { "You" } else { &sender_name };
-
-        styled.append_styled(
-            format!("{}: ", display_name),
-            Color::Light(BaseColor::Green),
-        );
-
-        // Format content
-        styled.append_styled(
-            format!("{}\n", message.content),
-            Color::Light(BaseColor::Cyan),
-        );
-
-        content.append(styled);
-    }))
-    .unwrap();
-}
-
 fn handle_system_event(siv_sink: &CbSink, content: &TextContent, event: SystemEvent) {
     let content = content.clone();
     let sink = siv_sink.clone();
@@ -237,21 +173,4 @@ fn handle_system_event(siv_sink: &CbSink, content: &TextContent, event: SystemEv
         content.append(styled);
     }))
     .unwrap();
-}
-
-/// Sets a custom theme for the TUI
-fn set_custom_theme(siv: &mut cursive::CursiveRunnable) {
-    let mut theme = Theme::default();
-    let mut palette = Palette::default();
-
-    palette[PaletteColor::Background] = Color::TerminalDefault;
-    palette[PaletteColor::View] = Color::TerminalDefault;
-    palette[PaletteColor::Primary] = Color::Dark(BaseColor::Blue);
-    palette[PaletteColor::Secondary] = Color::Light(BaseColor::Blue);
-    palette[PaletteColor::Tertiary] = Color::Light(BaseColor::White);
-    palette[PaletteColor::TitlePrimary] = Color::Light(BaseColor::Green);
-    palette[PaletteColor::TitleSecondary] = Color::Dark(BaseColor::Green);
-
-    theme.palette = palette;
-    siv.set_theme(theme);
 }
