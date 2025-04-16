@@ -94,11 +94,15 @@ fn chat_tui(input_tx: std_mpsc::Sender<String>, output_rx: std_mpsc::Receiver<Ou
     let input = EditView::new()
         .on_submit(move |s, text| {
             // Use synchronous send - no runtime needed
-            let _ = input_tx_clone.send(text.to_string());
+            if text != "/quit" {
+                let _ = input_tx_clone.send(text.to_string());
 
-            s.call_on_name("input", |view: &mut EditView| {
-                view.set_content("");
-            });
+                s.call_on_name("input", |view: &mut EditView| {
+                    view.set_content("");
+                });
+            } else {
+                s.quit();
+            }
         })
         .with_name("input")
         .fixed_height(1);

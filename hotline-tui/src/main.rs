@@ -1,242 +1,125 @@
-pub mod chat_client_tui;
+mod chat_client_tui;
 
-use std::sync::mpsc as std_mpsc;
-use std::thread;
-
-use chrono::Local;
-use cursive::CbSink;
 use cursive::align::HAlign;
 use cursive::theme::{BaseColor, Color, Palette, PaletteColor, Theme};
 use cursive::traits::*;
-use cursive::utils::markup::StyledString;
-use cursive::views::{Dialog, EditView, LinearLayout, TextContent, TextView};
-use tokio::runtime::Runtime;
-use tokio::sync::mpsc;
-
-use core::client_backend::run_client_backend;
-use core::serializable_colours::*;
-use core::types::{ChatMessage, OutputEvent, SystemEvent, TextLine};
+use cursive::views::{Dialog, EditView, LinearLayout, TextView};
 
 fn main() {
-    // Create standard synchronous channels for UI to communicate with the async thread
-    let (ui_to_async_tx, ui_to_async_rx) = std_mpsc::channel::<String>();
-    let (async_to_ui_tx, async_to_ui_rx) = std_mpsc::channel::<OutputEvent>();
-
-    // Spawn the async thread with its own Tokio runtime
-    let async_thread: thread::JoinHandle<()> = thread::spawn(move || {
-        // Create a new Tokio runtime in this thread
-        let rt = Runtime::new().unwrap();
-
-        // Run the async code in this runtime
-        rt.block_on(async {
-            // Create Tokio channels for the async code
-            let (input_tx, input_rx) = mpsc::channel::<String>(100);
-            let (output_tx, mut output_rx) = mpsc::channel::<OutputEvent>(100);
-
-            // Bridge between std_mpsc and tokio channels
-
-            // Thread for forwarding UI inputs to async backend
-            let input_tx_clone = input_tx.clone();
-            tokio::spawn(async move {
-                while let Ok(message) = ui_to_async_rx.recv() {
-                    if input_tx_clone.send(message).await.is_err() {
-                        break;
-                    }
-                }
-            });
-
-            // Thread for forwarding backend outputs to UI
-            tokio::spawn(async move {
-                while let Some(event) = output_rx.recv().await {
-                    if async_to_ui_tx.send(event).is_err() {
-                        break;
-                    }
-                }
-            });
-
-            // Run the client backend
-            if let Err(e) = run_client_backend(input_rx, output_tx).await {
-                eprintln!("Backend error: {}", e);
-            }
-        });
-    });
-
-    // Run the UI in the main thread
-    chat_tui(ui_to_async_tx, async_to_ui_rx);
-
-    // Wait for the async thread to finish
-    let _ = async_thread.join();
+    run_start_screen();
 }
 
-fn chat_tui(input_tx: std_mpsc::Sender<String>, output_rx: std_mpsc::Receiver<OutputEvent>) {
+fn run_start_screen() {
     let mut siv = cursive::default();
     set_custom_theme(&mut siv);
 
-    let content = TextContent::new("");
-    let content_clone = content.clone();
-    let siv_sink = siv.cb_sink().clone();
+    // Create the title
+    let title = TextView::new("Hotline")
+        .h_align(HAlign::Center)
+        .style(Color::Light(BaseColor::Green));
 
-    // Add welcome messages from the frontend
-    print_textline_to_output(
-        &siv_sink,
-        &content,
-        TextLine {
-            text: "Welcome to Hotline Chat!".to_string(),
-            color: Some(BLUE_COLOR.clone()),
-        },
-    );
+    // Create the options text
+    let options = TextView::new("Enter 1 for Hotline Chat\nEnter 2 for Hotline Files")
+        .h_align(HAlign::Center);
 
-    print_textline_to_output(
-        &siv_sink,
-        &content,
-        TextLine {
-            text: "Please follow the prompts to connect to a server.".to_string(),
-            color: Some(WHITE_COLOR.clone()),
-        },
-    );
-
-    let messages = TextView::new_with_content(content.clone())
-        .scrollable()
-        .full_height()
-        .fixed_height(20);
-
-    let input_label = TextView::new("Enter message (type '/quit' to exit)").h_align(HAlign::Left);
-
-    // Use a standard channel sender in the UI callback - NO TOKIO HERE
-    let input_tx_clone = input_tx.clone();
+    // Create the input field
     let input = EditView::new()
         .on_submit(move |s, text| {
-            // Use synchronous send - no runtime needed
-            let _ = input_tx_clone.send(text.to_string());
-
-            s.call_on_name("input", |view: &mut EditView| {
-                view.set_content("");
-            });
+            match text.trim() {
+                "1" => {
+                    // Show the mode selection screen
+                    s.pop_layer();
+                    show_mode_selection(s);
+                }
+                "2" => {
+                    // Files option - to be implemented
+                    s.add_layer(
+                        Dialog::info("Hotline Files feature coming soon!").title("Not Implemented"),
+                    );
+                }
+                _ => {
+                    // Invalid option
+                    s.add_layer(Dialog::info("Please enter 1 or 2").title("Invalid Option"));
+                }
+            }
         })
         .with_name("input")
         .fixed_height(1);
 
+    // Create the layout
     let layout = LinearLayout::vertical()
-        .child(messages)
-        .child(input_label)
+        .child(TextView::new("\n\n")) // Add some space at the top
+        .child(title)
+        .child(TextView::new("\n\n")) // Add space between title and options
+        .child(options)
+        .child(TextView::new("\n")) // Add space between options and input
         .child(input.full_width());
 
-    siv.add_layer(Dialog::around(layout).title("Hotline Chat"));
+    // Add the layout to the screen
+    siv.add_layer(Dialog::around(layout).title("Hotline"));
 
+    // Add a global callback to quit with 'q'
     siv.add_global_callback('q', |s| s.quit());
 
-    // Spawn a thread to handle output events
-    let siv_sink_clone = siv.cb_sink().clone();
-    thread::spawn(move || {
-        while let Ok(event) = output_rx.recv() {
-            match event {
-                OutputEvent::TextLine(line) => {
-                    print_textline_to_output(&siv_sink_clone, &content_clone, line);
-                }
-                OutputEvent::ChatMessage(msg) => {
-                    print_chat_message_to_output(&siv_sink_clone, &content_clone, msg);
-                }
-                OutputEvent::SystemEvent(event) => {
-                    handle_system_event(&siv_sink_clone, &content_clone, event);
-                }
-            }
-        }
-    });
-
+    // Run the UI
     siv.run();
 }
 
-fn print_textline_to_output(siv_sink: &CbSink, content: &TextContent, textline: TextLine) {
-    let content = content.clone();
-    let sink = siv_sink.clone();
-    sink.send(Box::new(move |_| {
-        let mut styled = StyledString::new();
-        if let Some(serializable_color) = textline.color {
-            // Convert SerializableColor to cursive::theme::Color
-            let color: Color = serializable_color.into();
-            styled.append_styled(format!("{}\n", textline.text), color);
-        } else {
-            styled.append_styled(format!("{}\n", textline.text), Color::TerminalDefault);
-        }
-        content.append(styled);
-    }))
-    .unwrap();
-}
+fn show_mode_selection(siv: &mut cursive::Cursive) {
+    // Create the title
+    let title = TextView::new("HOTLINE CHAT")
+        .h_align(HAlign::Center)
+        .style(Color::Light(BaseColor::Green));
 
-fn print_chat_message_to_output(siv_sink: &CbSink, content: &TextContent, message: ChatMessage) {
-    let content = content.clone();
-    let sink = siv_sink.clone();
+    // Create the options text
+    let options =
+        TextView::new("Enter 1 for Server Mode\nEnter 2 for Client Mode").h_align(HAlign::Center);
 
-    sink.send(Box::new(move |_| {
-        let mut styled = StyledString::new();
+    // Create the input field
+    let input = EditView::new()
+        .on_submit(move |s, text| {
+            match text.trim() {
+                "1" => {
+                    // Server mode
+                    s.pop_layer();
+                    s.add_layer(
+                        Dialog::around(TextView::new("Server mode will be implemented next"))
+                            .title("Coming Soon")
+                            .button("Back", |s| {
+                                s.pop_layer();
+                                show_mode_selection(s);
+                            })
+                            .button("Quit", |s| s.quit()),
+                    );
+                }
+                "2" => {
+                    // Client mode - Call your chat client TUI
+                    s.pop_layer();
+                    s.quit(); // Quit the current Cursive instance
 
-        // Format timestamp
-        let local_time = message.timestamp.with_timezone(&Local).format("%H:%M:%S");
-        styled.append_styled(
-            format!("[{}] ", local_time),
-            Color::Light(BaseColor::Yellow),
-        );
-
-        // Format sender name
-        let sender_name = message.username.unwrap_or(message.sender);
-        let display_name = if message.is_self { "You" } else { &sender_name };
-
-        styled.append_styled(
-            format!("{}: ", display_name),
-            Color::Light(BaseColor::Green),
-        );
-
-        // Format content
-        styled.append_styled(
-            format!("{}\n", message.content),
-            Color::Light(BaseColor::Cyan),
-        );
-
-        content.append(styled);
-    }))
-    .unwrap();
-}
-
-fn handle_system_event(siv_sink: &CbSink, content: &TextContent, event: SystemEvent) {
-    let content = content.clone();
-    let sink = siv_sink.clone();
-
-    sink.send(Box::new(move |_| {
-        let mut styled = StyledString::new();
-
-        match event {
-            SystemEvent::ConnectionEstablished { address } => {
-                styled.append_styled(
-                    format!("Connected as {}\n", address),
-                    Color::Light(BaseColor::Green),
-                );
+                    // Start the chat client TUI
+                    chat_client_tui::run_chat_tui();
+                }
+                _ => {
+                    // Invalid option
+                    s.add_layer(Dialog::info("Please enter 1 or 2").title("Invalid Option"));
+                }
             }
-            SystemEvent::ConnectionClosed => {
-                styled.append_styled(
-                    "Server closed the connection.\n",
-                    Color::Light(BaseColor::Red),
-                );
-            }
-            SystemEvent::ConnectionError { message } => {
-                styled.append_styled(
-                    format!("Error: {}\n", message),
-                    Color::Light(BaseColor::Red),
-                );
-            }
-            SystemEvent::PromptInput { prompt } => {
-                styled.append_styled(format!("{}\n", prompt), Color::Light(BaseColor::Magenta));
-            }
-            SystemEvent::RateLimit { seconds } => {
-                styled.append_styled(
-                    format!("You are on timeout for {:.1} more seconds\n", seconds),
-                    Color::Light(BaseColor::Red),
-                );
-            }
-        }
+        })
+        .with_name("input")
+        .fixed_height(1);
 
-        content.append(styled);
-    }))
-    .unwrap();
+    // Create the layout
+    let layout = LinearLayout::vertical()
+        .child(TextView::new("\n\n")) // Add some space at the top
+        .child(title)
+        .child(TextView::new("\n\n")) // Add space between title and options
+        .child(options)
+        .child(TextView::new("\n")) // Add space between options and input
+        .child(input.full_width());
+
+    // Add the layout to the screen
+    siv.add_layer(Dialog::around(layout).title("Hotline Chat"));
 }
 
 /// Sets a custom theme for the TUI
