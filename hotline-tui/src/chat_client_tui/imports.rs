@@ -8,6 +8,7 @@ pub use cursive::align::HAlign;
 pub use cursive::theme::{BaseColor, Color, Palette, PaletteColor, Theme};
 pub use cursive::traits::*;
 pub use cursive::utils::markup::StyledString;
+pub use cursive::views::ScrollView;
 pub use cursive::views::{Dialog, EditView, LinearLayout, TextContent, TextView};
 pub use std::sync::Arc;
 pub use std::sync::Mutex;

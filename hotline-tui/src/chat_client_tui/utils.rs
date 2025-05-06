@@ -19,10 +19,17 @@ pub fn global_quit(siv_sink: &CbSink, shutdown_signal: &Arc<AtomicBool>) {
     });
 }
 
-pub fn print_textline_to_output(siv_sink: &CbSink, content: &TextContent, textline: TextLine) {
+pub fn print_textline_to_output(
+    siv_sink: &CbSink,
+    content: &TextContent,
+    textline: TextLine,
+    auto_scroll: &Arc<Mutex<bool>>,
+) {
     let content = content.clone();
     let sink = siv_sink.clone();
-    sink.send(Box::new(move |_| {
+    let auto_scroll = auto_scroll.clone();
+
+    sink.send(Box::new(move |s| {
         let mut styled = StyledString::new();
         if let Some(serializable_color) = textline.color {
             // Convert SerializableColor to cursive::theme::Color
@@ -32,6 +39,15 @@ pub fn print_textline_to_output(siv_sink: &CbSink, content: &TextContent, textli
             styled.append_styled(format!("{}\n", textline.text), Color::TerminalDefault);
         }
         content.append(styled);
+
+        // Auto-scroll if enabled
+        if let Ok(scroll) = auto_scroll.lock() {
+            if *scroll {
+                s.call_on_name("messages_scroll", |view: &mut ScrollView<TextView>| {
+                    view.scroll_to_bottom();
+                });
+            }
+        }
     }))
     .unwrap();
 }
@@ -40,11 +56,13 @@ pub fn print_chat_message_to_output(
     siv_sink: &CbSink,
     content: &TextContent,
     message: ChatMessage,
+    auto_scroll: &Arc<Mutex<bool>>,
 ) {
     let content = content.clone();
     let sink = siv_sink.clone();
+    let auto_scroll = auto_scroll.clone();
 
-    sink.send(Box::new(move |_| {
+    sink.send(Box::new(move |s| {
         let mut styled = StyledString::new();
 
         // Format timestamp
@@ -70,6 +88,15 @@ pub fn print_chat_message_to_output(
         );
 
         content.append(styled);
+
+        // Auto-scroll if enabled
+        if let Ok(scroll) = auto_scroll.lock() {
+            if *scroll {
+                s.call_on_name("messages_scroll", |view: &mut ScrollView<TextView>| {
+                    view.scroll_to_bottom();
+                });
+            }
+        }
     }))
     .unwrap();
 }

@@ -133,7 +133,7 @@ fn show_connection_dialog(
 
             // Show connecting message
             let content_clone = content.clone();
-            s.call_on_name("messages", |view: &mut TextView| {
+            s.call_on_name("messages", |_view: &mut TextView| {
                 let mut styled = StyledString::new();
                 styled.append_styled(
                     format!("Connecting to {}:{}...\n", server_addr, port),
@@ -161,6 +161,44 @@ fn chat_tui(
     let mut siv = cursive::default();
     set_custom_theme(&mut siv);
 
+    // Create auto-scroll state with thread-safe primitives
+    let auto_scroll = Arc::new(Mutex::new(true));
+
+    // Clone for closures
+    let auto_scroll_up = auto_scroll.clone();
+    let auto_scroll_pgup = auto_scroll.clone();
+    let auto_scroll_down = auto_scroll.clone();
+
+    // Disable auto-scroll when user scrolls up
+    siv.add_global_callback(
+        cursive::event::Event::Key(cursive::event::Key::Up),
+        move |_| {
+            if let Ok(mut scroll) = auto_scroll_up.lock() {
+                *scroll = false;
+            }
+        },
+    );
+
+    // Disable auto-scroll when user presses Page Up
+    siv.add_global_callback(
+        cursive::event::Event::Key(cursive::event::Key::PageUp),
+        move |_| {
+            if let Ok(mut scroll) = auto_scroll_pgup.lock() {
+                *scroll = false;
+            }
+        },
+    );
+
+    // Re-enable auto-scroll when user scrolls to bottom
+    siv.add_global_callback(
+        cursive::event::Event::Key(cursive::event::Key::End),
+        move |_| {
+            if let Ok(mut scroll) = auto_scroll_down.lock() {
+                *scroll = true;
+            }
+        },
+    );
+
     let content = TextContent::new("");
     let content_clone = content.clone();
     let siv_sink = siv.cb_sink().clone();
@@ -173,10 +211,12 @@ fn chat_tui(
             text: "Welcome to Hotline Chat!".to_string(),
             color: Some(BLUE_COLOR.clone()),
         },
+        &auto_scroll,
     );
 
     let messages = TextView::new_with_content(content.clone())
         .scrollable()
+        .with_name("messages_scroll")
         .full_height()
         .fixed_height(20);
 
@@ -235,6 +275,7 @@ fn chat_tui(
     let siv_sink_clone = siv.cb_sink().clone();
     let output_shutdown = shutdown_signal.clone();
     let shutdown_signal_for_thread = shutdown_signal.clone(); // clone again for system event handler
+    let auto_scroll_for_thread = auto_scroll.clone();
 
     let output_thread = thread::spawn(move || {
         while let Ok(event) = output_rx.recv() {
@@ -244,10 +285,20 @@ fn chat_tui(
 
             match event {
                 OutputEvent::TextLine(line) => {
-                    print_textline_to_output(&siv_sink_clone, &content_clone, line);
+                    print_textline_to_output(
+                        &siv_sink_clone,
+                        &content_clone,
+                        line,
+                        &auto_scroll_for_thread,
+                    );
                 }
                 OutputEvent::ChatMessage(msg) => {
-                    print_chat_message_to_output(&siv_sink_clone, &content_clone, msg);
+                    print_chat_message_to_output(
+                        &siv_sink_clone,
+                        &content_clone,
+                        msg,
+                        &auto_scroll_for_thread,
+                    );
                 }
                 OutputEvent::SystemEvent(event) => {
                     handle_system_event(
@@ -255,7 +306,8 @@ fn chat_tui(
                         &content_clone,
                         event,
                         input_tx.clone(),
-                        shutdown_signal_for_thread.clone(), // clone here
+                        shutdown_signal_for_thread.clone(),
+                        &auto_scroll_for_thread,
                     );
                 }
             }
@@ -285,10 +337,12 @@ fn handle_system_event(
     event: SystemEvent,
     input_tx: std_mpsc::Sender<String>,
     shutdown_signal: Arc<AtomicBool>,
+    auto_scroll: &Arc<Mutex<bool>>,
 ) {
     let content = content.clone();
     let sink = siv_sink.clone();
     let input_tx = input_tx.clone();
+    let auto_scroll = auto_scroll.clone();
 
     sink.send(Box::new(move |s| {
         let mut styled = StyledString::new();
@@ -300,6 +354,15 @@ fn handle_system_event(
                     Color::Light(BaseColor::Green),
                 );
                 content.append(styled);
+
+                // Auto-scroll if enabled
+                if let Ok(scroll) = auto_scroll.lock() {
+                    if *scroll {
+                        s.call_on_name("messages_scroll", |view: &mut ScrollView<TextView>| {
+                            view.scroll_to_bottom();
+                        });
+                    }
+                }
             }
             SystemEvent::ConnectionClosed => {
                 styled.append_styled(
@@ -307,6 +370,15 @@ fn handle_system_event(
                     Color::Light(BaseColor::Red),
                 );
                 content.append(styled);
+
+                // Auto-scroll if enabled
+                if let Ok(scroll) = auto_scroll.lock() {
+                    if *scroll {
+                        s.call_on_name("messages_scroll", |view: &mut ScrollView<TextView>| {
+                            view.scroll_to_bottom();
+                        });
+                    }
+                }
 
                 // Show connection dialog again
                 show_connection_dialog(
@@ -323,6 +395,15 @@ fn handle_system_event(
                 );
                 content.append(styled);
 
+                // Auto-scroll if enabled
+                if let Ok(scroll) = auto_scroll.lock() {
+                    if *scroll {
+                        s.call_on_name("messages_scroll", |view: &mut ScrollView<TextView>| {
+                            view.scroll_to_bottom();
+                        });
+                    }
+                }
+
                 // Show connection dialog again
                 show_connection_dialog(
                     s,
@@ -334,6 +415,15 @@ fn handle_system_event(
             SystemEvent::PromptInput { prompt } => {
                 styled.append_styled(format!("{}\n", prompt), Color::Light(BaseColor::Magenta));
                 content.append(styled);
+
+                // Auto-scroll if enabled
+                if let Ok(scroll) = auto_scroll.lock() {
+                    if *scroll {
+                        s.call_on_name("messages_scroll", |view: &mut ScrollView<TextView>| {
+                            view.scroll_to_bottom();
+                        });
+                    }
+                }
             }
             SystemEvent::RateLimit { seconds } => {
                 styled.append_styled(
@@ -341,6 +431,15 @@ fn handle_system_event(
                     Color::Light(BaseColor::Red),
                 );
                 content.append(styled);
+
+                // Auto-scroll if enabled
+                if let Ok(scroll) = auto_scroll.lock() {
+                    if *scroll {
+                        s.call_on_name("messages_scroll", |view: &mut ScrollView<TextView>| {
+                            view.scroll_to_bottom();
+                        });
+                    }
+                }
             }
         }
     }))
