@@ -77,6 +77,82 @@ pub fn run_chat_tui() {
     let _ = async_thread.join();
 }
 
+fn show_connection_dialog(
+    siv: &mut Cursive,
+    input_tx: std_mpsc::Sender<String>,
+    content: TextContent,
+    quit_signal: Arc<AtomicBool>,
+) {
+    // Create input fields for server address and port
+    let server_input = EditView::new().with_name("server_addr").fixed_width(30);
+
+    let port_input = EditView::new()
+        .content("8080")
+        .with_name("port")
+        .fixed_width(10);
+
+    let username_input = EditView::new().with_name("username").fixed_width(30);
+
+    // Create the layout for the dialog
+    let layout = LinearLayout::vertical()
+        .child(TextView::new("Server Address:"))
+        .child(server_input)
+        .child(TextView::new("Port:"))
+        .child(port_input)
+        .child(TextView::new("Username (optional):"))
+        .child(username_input);
+
+    // Create the dialog with buttons
+    let dialog = Dialog::around(layout)
+        .title("Connect to Server")
+        .button("Connect", move |s| {
+            // Get values from input fields
+            let server_addr = s
+                .call_on_name("server_addr", |view: &mut EditView| {
+                    view.get_content().to_string()
+                })
+                .unwrap_or_default();
+
+            let port = s
+                .call_on_name("port", |view: &mut EditView| view.get_content().to_string())
+                .unwrap_or("8080".to_string());
+
+            let username = s
+                .call_on_name("username", |view: &mut EditView| {
+                    view.get_content().to_string()
+                })
+                .unwrap_or_default();
+
+            if server_addr.trim().is_empty() {
+                s.add_layer(Dialog::info("Please enter a server address").title("Error"));
+                return;
+            }
+
+            // Remove the dialog
+            s.pop_layer();
+
+            // Show connecting message
+            let content_clone = content.clone();
+            s.call_on_name("messages", |view: &mut TextView| {
+                let mut styled = StyledString::new();
+                styled.append_styled(
+                    format!("Connecting to {}:{}...\n", server_addr, port),
+                    Color::Light(BaseColor::Blue),
+                );
+                content_clone.append(styled);
+            });
+
+            // Send connection details to backend
+            let _ = input_tx.send(format!("CONNECT:{}:{}:{}", server_addr, port, username));
+        })
+        .button("Quit", move |s| {
+            let cb_sink = s.cb_sink().clone();
+            global_quit(&cb_sink, &quit_signal);
+        });
+
+    siv.add_layer(dialog);
+}
+
 fn chat_tui(
     input_tx: std_mpsc::Sender<String>,
     output_rx: std_mpsc::Receiver<OutputEvent>,
@@ -96,15 +172,6 @@ fn chat_tui(
         TextLine {
             text: "Welcome to Hotline Chat!".to_string(),
             color: Some(BLUE_COLOR.clone()),
-        },
-    );
-
-    print_textline_to_output(
-        &siv_sink,
-        &content,
-        TextLine {
-            text: "Please follow the prompts to connect to a server.".to_string(),
-            color: Some(WHITE_COLOR.clone()),
         },
     );
 
@@ -142,20 +209,35 @@ fn chat_tui(
 
     siv.add_layer(Dialog::around(layout).title("Hotline Chat"));
 
-    // Add global 'q' callback with shutdown signal
-    let q_quit_signal = Arc::clone(&shutdown_signal);
-    siv.add_global_callback('q', move |s| {
-        // Set the shutdown signal before quitting the UI
-        q_quit_signal.store(true, Ordering::SeqCst);
-        s.quit();
-    });
+    // Show connection dialog at startup
+    let dialog_input_tx = input_tx.clone();
+    let dialog_content = content.clone();
+
+    siv.add_layer(
+        Dialog::text("Would you like to connect to a server?")
+            .title("Connection")
+            .button("Connect", {
+                let shutdown_signal = shutdown_signal.clone(); // clone for this closure
+                let dialog_input_tx = dialog_input_tx.clone();
+                let dialog_content = dialog_content.clone();
+                move |s| {
+                    let dialog_input_tx = dialog_input_tx.clone();
+                    let dialog_content = dialog_content.clone();
+                    let shutdown_signal = shutdown_signal.clone();
+                    s.pop_layer();
+                    show_connection_dialog(s, dialog_input_tx, dialog_content, shutdown_signal);
+                }
+            })
+            .button("Quit", |s| s.quit()),
+    );
 
     // Spawn a thread to handle output events
     let siv_sink_clone = siv.cb_sink().clone();
-    let output_shutdown = Arc::clone(&shutdown_signal);
+    let output_shutdown = shutdown_signal.clone();
+    let shutdown_signal_for_thread = shutdown_signal.clone(); // clone again for system event handler
+
     let output_thread = thread::spawn(move || {
         while let Ok(event) = output_rx.recv() {
-            // Check if we should shut down
             if output_shutdown.load(Ordering::SeqCst) {
                 break;
             }
@@ -168,7 +250,13 @@ fn chat_tui(
                     print_chat_message_to_output(&siv_sink_clone, &content_clone, msg);
                 }
                 OutputEvent::SystemEvent(event) => {
-                    handle_system_event(&siv_sink_clone, &content_clone, event);
+                    handle_system_event(
+                        &siv_sink_clone,
+                        &content_clone,
+                        event,
+                        input_tx.clone(),
+                        shutdown_signal_for_thread.clone(), // clone here
+                    );
                 }
             }
         }
@@ -185,17 +273,24 @@ fn chat_tui(
 
     let _ = std::thread::spawn(move || {
         // Give threads a short time to clean up
-        std::thread::sleep(Duration::from_millis(500));
+        std::thread::sleep(Duration::from_millis(400));
         // Force exit the process
         std::process::exit(0);
     });
 }
 
-fn handle_system_event(siv_sink: &CbSink, content: &TextContent, event: SystemEvent) {
+fn handle_system_event(
+    siv_sink: &CbSink,
+    content: &TextContent,
+    event: SystemEvent,
+    input_tx: std_mpsc::Sender<String>,
+    shutdown_signal: Arc<AtomicBool>,
+) {
     let content = content.clone();
     let sink = siv_sink.clone();
+    let input_tx = input_tx.clone();
 
-    sink.send(Box::new(move |_| {
+    sink.send(Box::new(move |s| {
         let mut styled = StyledString::new();
 
         match event {
@@ -204,11 +299,21 @@ fn handle_system_event(siv_sink: &CbSink, content: &TextContent, event: SystemEv
                     format!("Connected as {}\n", address),
                     Color::Light(BaseColor::Green),
                 );
+                content.append(styled);
             }
             SystemEvent::ConnectionClosed => {
                 styled.append_styled(
                     "Server closed the connection.\n",
                     Color::Light(BaseColor::Red),
+                );
+                content.append(styled);
+
+                // Show connection dialog again
+                show_connection_dialog(
+                    s,
+                    input_tx.clone(),
+                    content.clone(),
+                    shutdown_signal.clone(),
                 );
             }
             SystemEvent::ConnectionError { message } => {
@@ -216,19 +321,28 @@ fn handle_system_event(siv_sink: &CbSink, content: &TextContent, event: SystemEv
                     format!("Error: {}\n", message),
                     Color::Light(BaseColor::Red),
                 );
+                content.append(styled);
+
+                // Show connection dialog again
+                show_connection_dialog(
+                    s,
+                    input_tx.clone(),
+                    content.clone(),
+                    shutdown_signal.clone(),
+                );
             }
             SystemEvent::PromptInput { prompt } => {
                 styled.append_styled(format!("{}\n", prompt), Color::Light(BaseColor::Magenta));
+                content.append(styled);
             }
             SystemEvent::RateLimit { seconds } => {
                 styled.append_styled(
                     format!("You are on timeout for {:.1} more seconds\n", seconds),
                     Color::Light(BaseColor::Red),
                 );
+                content.append(styled);
             }
         }
-
-        content.append(styled);
     }))
     .unwrap();
 }

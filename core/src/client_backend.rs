@@ -27,60 +27,38 @@ pub async fn run_client_backend(
     output_tx: mpsc::Sender<OutputEvent>,
     shutdown_signal: Arc<AtomicBool>,
 ) -> Result<()> {
-    // Ask for server address - send a prompt event
-    output_tx
-        .send(OutputEvent::SystemEvent(SystemEvent::PromptInput {
-            prompt: "Enter server address (IP or domain):".to_string(),
-        }))
-        .await?;
-
-    // Wait for server address from UI
-    let server_addr = if let Some(addr) = input_rx.recv().await {
-        addr
+    // Wait for connection details from UI
+    let connection_details = if let Some(details) = input_rx.recv().await {
+        details
     } else {
         return Ok(());
     };
 
-    // Ask for port
-    output_tx
-        .send(OutputEvent::SystemEvent(SystemEvent::PromptInput {
-            prompt: "Enter server port (default 8080):".to_string(),
-        }))
-        .await?;
+    // Parse connection details (format: "CONNECT:server:port:username")
+    if !connection_details.starts_with("CONNECT:") {
+        output_tx
+            .send(OutputEvent::SystemEvent(SystemEvent::ConnectionError {
+                message: "Invalid connection format".to_string(),
+            }))
+            .await?;
+        return Ok(());
+    }
 
-    let port_input = if let Some(port) = input_rx.recv().await {
-        port
-    } else {
-        "8080".to_string()
-    };
+    let parts: Vec<&str> = connection_details.split(':').collect();
+    if parts.len() < 4 {
+        output_tx
+            .send(OutputEvent::SystemEvent(SystemEvent::ConnectionError {
+                message: "Invalid connection details".to_string(),
+            }))
+            .await?;
+        return Ok(());
+    }
 
-    let port = if port_input.trim().is_empty() {
-        "8080".to_string()
-    } else {
-        port_input.trim().to_string()
-    };
+    let server_addr = parts[1];
+    let port = parts[2];
+    let username = parts[3];
 
-    // Ask for username
-    output_tx
-        .send(OutputEvent::SystemEvent(SystemEvent::PromptInput {
-            prompt: "Enter an optional username (press Enter to skip):".to_string(),
-        }))
-        .await?;
-
-    let username: String = match input_rx.recv().await {
-        Some(name) => name.trim().to_string(),
-        None => "".to_string(),
-    };
-
-    let address: String = format!("{}:{}", server_addr.trim(), port);
-
-    // Send connecting message
-    output_tx
-        .send(OutputEvent::TextLine(TextLine {
-            text: format!("Connecting to {}...", address),
-            color: Some(BLUE_COLOR.clone()),
-        }))
-        .await?;
+    let address: String = format!("{}:{}", server_addr, port);
 
     // Connect to server
     let stream: TcpStream = match TcpStream::connect(&address).await {

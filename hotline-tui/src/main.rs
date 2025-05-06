@@ -17,11 +17,6 @@ fn main() {
 }
 
 fn show_mode_selection(siv: &mut cursive::Cursive) {
-    // Create the title
-    let title = TextView::new("HOTLINE CHAT")
-        .h_align(HAlign::Center)
-        .style(Color::Light(BaseColor::Green));
-
     // Create the options text
     let options =
         TextView::new("Enter 1 for Server Mode\nEnter 2 for Client Mode").h_align(HAlign::Center);
@@ -63,8 +58,6 @@ fn show_mode_selection(siv: &mut cursive::Cursive) {
     // Create the layout
     let layout = LinearLayout::vertical()
         .child(TextView::new("\n\n")) // Add some space at the top
-        .child(title)
-        .child(TextView::new("\n\n")) // Add space between title and options
         .child(options)
         .child(TextView::new("\n")) // Add space between options and input
         .child(input.full_width());
