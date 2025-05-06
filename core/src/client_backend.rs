@@ -3,6 +3,8 @@ use chrono::{DateTime, Utc};
 use serde::Deserialize;
 use std::collections::VecDeque;
 use std::net::SocketAddr;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader, BufWriter};
 use tokio::net::TcpStream;
@@ -23,6 +25,7 @@ struct ServerMessage {
 pub async fn run_client_backend(
     mut input_rx: mpsc::Receiver<String>,
     output_tx: mpsc::Sender<OutputEvent>,
+    shutdown_signal: Arc<AtomicBool>,
 ) -> Result<()> {
     // Ask for server address - send a prompt event
     output_tx
@@ -194,6 +197,10 @@ pub async fn run_client_backend(
 
     loop {
         // Send prompt
+        if shutdown_signal.load(Ordering::SeqCst) {
+            break;
+        }
+
         output_tx
             .send(OutputEvent::TextLine(TextLine {
                 text: "> ".to_string(),
@@ -202,6 +209,10 @@ pub async fn run_client_backend(
             .await?;
 
         if let Some(line) = input_rx.recv().await {
+            if shutdown_signal.load(Ordering::SeqCst) {
+                break;
+            }
+
             let trimmed = line.trim();
 
             if trimmed == "/quit" {
@@ -276,6 +287,14 @@ pub async fn run_client_backend(
             break;
         }
     }
+
+    // Clean shutdown message
+    output_tx
+        .send(OutputEvent::TextLine(TextLine {
+            text: "Shutting down client connection...".to_string(),
+            color: Some(YELLOW_COLOR.clone()),
+        }))
+        .await?;
 
     Ok(())
 }

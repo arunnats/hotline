@@ -5,9 +5,15 @@ pub use imports::*;
 pub use utils::*;
 
 pub fn run_chat_tui() {
+    // Create a shared shutdown signal
+    let shutdown_signal = Arc::new(AtomicBool::new(false));
+
     // Create standard synchronous channels for UI to communicate with the async thread
     let (ui_to_async_tx, ui_to_async_rx) = std_mpsc::channel::<String>();
     let (async_to_ui_tx, async_to_ui_rx) = std_mpsc::channel::<OutputEvent>();
+
+    // Clone the shutdown signal for the async thread
+    let thread_shutdown_signal = Arc::clone(&shutdown_signal);
 
     // Spawn the async thread with its own Tokio runtime
     let async_thread: thread::JoinHandle<()> = thread::spawn(move || {
@@ -24,8 +30,14 @@ pub fn run_chat_tui() {
 
             // Thread for forwarding UI inputs to async backend
             let input_tx_clone = input_tx.clone();
-            tokio::spawn(async move {
+            let input_shutdown = Arc::clone(&thread_shutdown_signal);
+            let input_handle = tokio::spawn(async move {
                 while let Ok(message) = ui_to_async_rx.recv() {
+                    // Check if we should shut down
+                    if input_shutdown.load(Ordering::SeqCst) {
+                        break;
+                    }
+
                     if input_tx_clone.send(message).await.is_err() {
                         break;
                     }
@@ -33,8 +45,14 @@ pub fn run_chat_tui() {
             });
 
             // Thread for forwarding backend outputs to UI
-            tokio::spawn(async move {
+            let output_shutdown = Arc::clone(&thread_shutdown_signal);
+            let output_handle = tokio::spawn(async move {
                 while let Some(event) = output_rx.recv().await {
+                    // Check if we should shut down
+                    if output_shutdown.load(Ordering::SeqCst) {
+                        break;
+                    }
+
                     if async_to_ui_tx.send(event).is_err() {
                         break;
                     }
@@ -42,20 +60,28 @@ pub fn run_chat_tui() {
             });
 
             // Run the client backend
-            if let Err(e) = run_client_backend(input_rx, output_tx).await {
+            if let Err(e) = run_client_backend(input_rx, output_tx, thread_shutdown_signal).await {
                 eprintln!("Backend error: {}", e);
             }
+
+            // Wait for all spawned tasks to complete
+            let _ = input_handle.await;
+            let _ = output_handle.await;
         });
     });
 
     // Run the UI in the main thread
-    chat_tui(ui_to_async_tx, async_to_ui_rx);
+    chat_tui(ui_to_async_tx, async_to_ui_rx, shutdown_signal);
 
     // Wait for the async thread to finish
     let _ = async_thread.join();
 }
 
-fn chat_tui(input_tx: std_mpsc::Sender<String>, output_rx: std_mpsc::Receiver<OutputEvent>) {
+fn chat_tui(
+    input_tx: std_mpsc::Sender<String>,
+    output_rx: std_mpsc::Receiver<OutputEvent>,
+    shutdown_signal: Arc<AtomicBool>,
+) {
     let mut siv = cursive::default();
     set_custom_theme(&mut siv);
 
@@ -91,9 +117,10 @@ fn chat_tui(input_tx: std_mpsc::Sender<String>, output_rx: std_mpsc::Receiver<Ou
 
     // Use a standard channel sender in the UI callback - NO TOKIO HERE
     let input_tx_clone = input_tx.clone();
+    let quit_signal = Arc::clone(&shutdown_signal);
+
     let input = EditView::new()
         .on_submit(move |s, text| {
-            // Use synchronous send - no runtime needed
             if text != "/quit" {
                 let _ = input_tx_clone.send(text.to_string());
 
@@ -101,7 +128,8 @@ fn chat_tui(input_tx: std_mpsc::Sender<String>, output_rx: std_mpsc::Receiver<Ou
                     view.set_content("");
                 });
             } else {
-                s.quit();
+                // Set the shutdown signal before quitting the UI
+                global_quit(&s.cb_sink().clone(), &quit_signal);
             }
         })
         .with_name("input")
@@ -114,12 +142,24 @@ fn chat_tui(input_tx: std_mpsc::Sender<String>, output_rx: std_mpsc::Receiver<Ou
 
     siv.add_layer(Dialog::around(layout).title("Hotline Chat"));
 
-    siv.add_global_callback('q', |s| s.quit());
+    // Add global 'q' callback with shutdown signal
+    let q_quit_signal = Arc::clone(&shutdown_signal);
+    siv.add_global_callback('q', move |s| {
+        // Set the shutdown signal before quitting the UI
+        q_quit_signal.store(true, Ordering::SeqCst);
+        s.quit();
+    });
 
     // Spawn a thread to handle output events
     let siv_sink_clone = siv.cb_sink().clone();
-    thread::spawn(move || {
+    let output_shutdown = Arc::clone(&shutdown_signal);
+    let output_thread = thread::spawn(move || {
         while let Ok(event) = output_rx.recv() {
+            // Check if we should shut down
+            if output_shutdown.load(Ordering::SeqCst) {
+                break;
+            }
+
             match event {
                 OutputEvent::TextLine(line) => {
                     print_textline_to_output(&siv_sink_clone, &content_clone, line);
@@ -134,7 +174,21 @@ fn chat_tui(input_tx: std_mpsc::Sender<String>, output_rx: std_mpsc::Receiver<Ou
         }
     });
 
+    // Run the UI
     siv.run();
+
+    // After UI exits, ensure shutdown signal is set
+    shutdown_signal.store(true, Ordering::SeqCst);
+
+    // Wait for the output thread to finish
+    let _ = output_thread.join();
+
+    let _ = std::thread::spawn(move || {
+        // Give threads a short time to clean up
+        std::thread::sleep(Duration::from_millis(500));
+        // Force exit the process
+        std::process::exit(0);
+    });
 }
 
 fn handle_system_event(siv_sink: &CbSink, content: &TextContent, event: SystemEvent) {

@@ -1,5 +1,24 @@
 use super::imports::*;
 
+pub fn global_quit(siv_sink: &CbSink, shutdown_signal: &Arc<AtomicBool>) {
+    // Set the shutdown signal
+    shutdown_signal.store(true, Ordering::SeqCst);
+
+    // Send a quit command to the UI
+    let sink = siv_sink.clone();
+    sink.send(Box::new(move |s| {
+        s.quit();
+    }))
+    .unwrap_or(());
+
+    // Spawn a thread that will force exit if clean shutdown takes too long
+    std::thread::spawn(move || {
+        std::thread::sleep(Duration::from_millis(1000));
+        eprintln!("Forcing process termination");
+        std::process::exit(0);
+    });
+}
+
 pub fn print_textline_to_output(siv_sink: &CbSink, content: &TextContent, textline: TextLine) {
     let content = content.clone();
     let sink = siv_sink.clone();
