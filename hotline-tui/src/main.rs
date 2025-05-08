@@ -1,4 +1,5 @@
 mod chat_client_tui;
+mod shared;
 
 use cursive::align::HAlign;
 use cursive::theme::{BaseColor, Color, Palette, PaletteColor, Theme};

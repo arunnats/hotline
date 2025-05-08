@@ -16,7 +16,8 @@ pub use std::sync::atomic::AtomicBool;
 pub use std::sync::atomic::Ordering;
 pub use tokio::runtime::Runtime;
 pub use tokio::sync::mpsc;
-pub use tokio::time::Duration;
+
+pub use crate::shared::global_quit;
 
 pub use core::client_backend::run_client_backend;
 pub use core::serializable_colours::*;
