@@ -152,6 +152,7 @@ pub fn server_tui(
 
     let input_tx_clone = input_tx.clone();
     let quit_signal = Arc::clone(&shutdown_signal);
+    let content_for_input = content.clone();
 
     let input = EditView::new()
         .on_submit(move |s, text| {
@@ -165,7 +166,7 @@ pub fn server_tui(
                 show_server_setup_dialog(
                     s,
                     input_tx_clone.clone(),
-                    content_clone.clone(),
+                    content_for_input.clone(),
                     quit_signal.clone(),
                 );
             }
@@ -180,11 +181,165 @@ pub fn server_tui(
 
     siv.add_layer(Dialog::around(layout).title("Hotline Server"));
 
+    // Spawn a thread to handle output events
+    let siv_sink_clone = siv.cb_sink().clone();
+    let content_clone_for_thread = content_clone.clone();
+    let output_shutdown = shutdown_signal.clone();
+    let shutdown_signal_for_thread = shutdown_signal.clone(); // clone again for system event handler
+    let auto_scroll_for_thread = auto_scroll.clone();
+    let input_tx_for_thread = input_tx.clone();
+
+    let output_thread = thread::spawn(move || {
+        while let Ok(event) = output_rx.recv() {
+            if output_shutdown.load(Ordering::SeqCst) {
+                break;
+            }
+
+            match event {
+                OutputEvent::TextLine(line) => {
+                    print_textline_to_output(
+                        &siv_sink_clone,
+                        &content_clone_for_thread,
+                        line,
+                        &auto_scroll_for_thread,
+                    );
+                }
+                OutputEvent::ChatMessage(msg) => {
+                    print_chat_message_to_output(
+                        &siv_sink_clone,
+                        &content_clone_for_thread,
+                        msg,
+                        &auto_scroll_for_thread,
+                    );
+                }
+                OutputEvent::SystemEvent(event) => {
+                    handle_system_event(
+                        &siv_sink_clone,
+                        &content_clone_for_thread,
+                        event,
+                        input_tx_for_thread.clone(),
+                        shutdown_signal_for_thread.clone(),
+                        &auto_scroll_for_thread,
+                    );
+                }
+            }
+        }
+    });
+
     // Show server setup dialog at startup
-    show_server_setup_dialog(&mut siv, input_tx, content, shutdown_signal);
+    show_server_setup_dialog(
+        &mut siv,
+        input_tx.clone(),
+        content.clone(),
+        shutdown_signal.clone(),
+    );
 
     // Run the UI
     siv.run();
+
+    // After UI exits, ensure shutdown signal is set
+    shutdown_signal.store(true, Ordering::SeqCst);
+
+    // Wait for the output thread to finish
+    let _ = output_thread.join();
+
+    // Force exit immediately
+    std::process::exit(0);
+}
+
+fn handle_system_event(
+    siv_sink: &CbSink,
+    content: &TextContent,
+    event: SystemEvent,
+    input_tx: std_mpsc::Sender<String>,
+    shutdown_signal: Arc<AtomicBool>,
+    auto_scroll: &Arc<Mutex<bool>>,
+) {
+    let content = content.clone();
+    let sink = siv_sink.clone();
+    let auto_scroll = auto_scroll.clone();
+
+    sink.send(Box::new(move |s| {
+        let mut styled = StyledString::new();
+
+        match event {
+            SystemEvent::ConnectionEstablished { address } => {
+                styled.append_styled(
+                    format!("Client connected: {}\n", address),
+                    Color::Light(BaseColor::Green),
+                );
+                content.append(styled);
+
+                // Auto-scroll if enabled
+                if let Ok(scroll) = auto_scroll.lock() {
+                    if *scroll {
+                        s.call_on_name("messages_scroll", |view: &mut ScrollView<TextView>| {
+                            view.scroll_to_bottom();
+                        });
+                    }
+                }
+            }
+            SystemEvent::ConnectionClosed => {
+                styled.append_styled("Client disconnected\n", Color::Light(BaseColor::Yellow));
+                content.append(styled);
+
+                // Auto-scroll if enabled
+                if let Ok(scroll) = auto_scroll.lock() {
+                    if *scroll {
+                        s.call_on_name("messages_scroll", |view: &mut ScrollView<TextView>| {
+                            view.scroll_to_bottom();
+                        });
+                    }
+                }
+            }
+            SystemEvent::ConnectionError { message } => {
+                styled.append_styled(
+                    format!("Error: {}\n", message),
+                    Color::Light(BaseColor::Red),
+                );
+                content.append(styled);
+
+                // Auto-scroll if enabled
+                if let Ok(scroll) = auto_scroll.lock() {
+                    if *scroll {
+                        s.call_on_name("messages_scroll", |view: &mut ScrollView<TextView>| {
+                            view.scroll_to_bottom();
+                        });
+                    }
+                }
+            }
+            SystemEvent::PromptInput { prompt } => {
+                styled.append_styled(format!("{}\n", prompt), Color::Light(BaseColor::Magenta));
+                content.append(styled);
+
+                // Auto-scroll if enabled
+                if let Ok(scroll) = auto_scroll.lock() {
+                    if *scroll {
+                        s.call_on_name("messages_scroll", |view: &mut ScrollView<TextView>| {
+                            view.scroll_to_bottom();
+                        });
+                    }
+                }
+            }
+            SystemEvent::RateLimit { seconds } => {
+                styled.append_styled(
+                    format!("Client rate limited for {:.1} more seconds\n", seconds),
+                    Color::Light(BaseColor::Red),
+                );
+                content.append(styled);
+
+                // Auto-scroll if enabled
+                if let Ok(scroll) = auto_scroll.lock() {
+                    if *scroll {
+                        s.call_on_name("messages_scroll", |view: &mut ScrollView<TextView>| {
+                            view.scroll_to_bottom();
+                        });
+                    }
+                }
+            }
+        }
+    }))
+    .unwrap();
 }
 
 // Helper function to print text to the output
@@ -201,7 +356,9 @@ fn print_textline_to_output(
     sink.send(Box::new(move |s| {
         let mut styled = StyledString::new();
         if let Some(color) = line.color {
-            // styled.append_styled(line.text, color);
+            // Convert SerializableColor to cursive::style::Color
+            let color_converted: cursive::style::Color = color.into();
+            styled.append_styled(line.text, color_converted);
         } else {
             styled.append_plain(line.text);
         }
@@ -232,8 +389,20 @@ fn print_chat_message_to_output(
 
     sink.send(Box::new(move |s| {
         let mut styled = StyledString::new();
-        styled.append_styled(format!("{}: ", msg.sender), Color::Light(BaseColor::Green));
-        styled.append_plain(msg.content);
+        let sender_name = if let Some(username) = &msg.username {
+            username.clone()
+        } else {
+            msg.sender.clone()
+        };
+
+        // Format based on whether this is a message from the host or not
+        if msg.is_self {
+            styled.append_styled(format!("{}: ", sender_name), Color::Light(BaseColor::Blue));
+        } else {
+            styled.append_styled(format!("{}: ", sender_name), Color::Light(BaseColor::Green));
+        }
+
+        styled.append_plain(&msg.content);
         styled.append_plain("\n");
         content.append(styled);
 

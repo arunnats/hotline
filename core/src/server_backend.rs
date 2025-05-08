@@ -12,7 +12,7 @@ use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::TcpListener;
 use tokio::sync::{Mutex, broadcast, mpsc};
 
-use crate::types::{ChatMessage, OutputEvent, TextLine};
+use crate::types::{ChatMessage, OutputEvent, SystemEvent, TextLine};
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 struct Message {
@@ -102,6 +102,11 @@ pub async fn run_server_backend(
                             color: None,
                         })).await;
 
+                        // Send a ConnectionEstablished event
+                        let _ = output_tx.send(OutputEvent::SystemEvent(SystemEvent::ConnectionEstablished {
+                            address: addr.to_string(),
+                        })).await;
+
                         let tx = tx.clone();
                         let mut rx = tx.subscribe();
                         let usernames = Arc::clone(&usernames);
@@ -139,6 +144,9 @@ pub async fn run_server_backend(
                                                     timestamp: leave_msg.timestamp,
                                                     is_self: false,
                                                 })).await;
+
+                                                // Send a ConnectionClosed event
+                                                let _ = output_tx.send(OutputEvent::SystemEvent(SystemEvent::ConnectionClosed)).await;
                                             }
                                             break;
                                         }
@@ -166,6 +174,11 @@ pub async fn run_server_backend(
                                                     username: join_msg.username.clone(),
                                                     timestamp: join_msg.timestamp,
                                                     is_self: false,
+                                                })).await;
+
+                                                // Send a notification about the new user
+                                                let _ = output_tx.send(OutputEvent::SystemEvent(SystemEvent::PromptInput {
+                                                    prompt: format!("User {} has joined the chat", name),
                                                 })).await;
                                             } else {
                                                 writer.write_all(b"{\"error\": \"Invalid username command\"}\n").await?;
@@ -271,6 +284,11 @@ pub async fn run_server_backend(
             text: "Server shutting down...".to_string(),
             color: None,
         }))
+        .await;
+
+    // Send a final system event
+    let _ = output_tx
+        .send(OutputEvent::SystemEvent(SystemEvent::ConnectionClosed))
         .await;
 
     Ok(())

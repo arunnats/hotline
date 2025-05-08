@@ -20,4 +20,4 @@ pub use crate::shared::global_quit;
 
 pub use core::serializable_colours::*;
 pub use core::server_backend::run_server_backend;
-pub use core::types::{ChatMessage, OutputEvent, TextLine};
+pub use core::types::{ChatMessage, OutputEvent, SystemEvent, TextLine};
