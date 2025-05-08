@@ -13,8 +13,9 @@ pub fn global_quit(siv_sink: &CbSink, shutdown_signal: &Arc<AtomicBool>) {
 
     // Spawn a thread that will force exit if clean shutdown takes too long
     std::thread::spawn(move || {
-        std::thread::sleep(Duration::from_millis(1000));
-        eprintln!("Forcing process termination");
+        // Give a shorter time for clean shutdown
+        std::thread::sleep(Duration::from_millis(400));
+        // Force exit the process
         std::process::exit(0);
     });
 }

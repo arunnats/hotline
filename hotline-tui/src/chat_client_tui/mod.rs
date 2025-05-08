@@ -145,9 +145,8 @@ fn show_connection_dialog(
             // Send connection details to backend
             let _ = input_tx.send(format!("CONNECT:{}:{}:{}", server_addr, port, username));
         })
-        .button("Quit", move |s| {
-            let cb_sink = s.cb_sink().clone();
-            global_quit(&cb_sink, &quit_signal);
+        .button("Quit", {
+            move |s| global_quit(&s.cb_sink().clone(), &quit_signal)
         });
 
     siv.add_layer(dialog);
@@ -268,7 +267,10 @@ fn chat_tui(
                     show_connection_dialog(s, dialog_input_tx, dialog_content, shutdown_signal);
                 }
             })
-            .button("Quit", |s| s.quit()),
+            .button("Quit", {
+                let quit_signal = shutdown_signal.clone(); // Clone before the move closure
+                move |s| global_quit(&s.cb_sink().clone(), &quit_signal)
+            }),
     );
 
     // Spawn a thread to handle output events
@@ -323,12 +325,8 @@ fn chat_tui(
     // Wait for the output thread to finish
     let _ = output_thread.join();
 
-    let _ = std::thread::spawn(move || {
-        // Give threads a short time to clean up
-        std::thread::sleep(Duration::from_millis(400));
-        // Force exit the process
-        std::process::exit(0);
-    });
+    // Force exit immediately after UI quits
+    std::process::exit(0);
 }
 
 fn handle_system_event(

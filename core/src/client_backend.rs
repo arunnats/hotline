@@ -179,13 +179,6 @@ pub async fn run_client_backend(
             break;
         }
 
-        output_tx
-            .send(OutputEvent::TextLine(TextLine {
-                text: "> ".to_string(),
-                color: None,
-            }))
-            .await?;
-
         if let Some(line) = input_rx.recv().await {
             if shutdown_signal.load(Ordering::SeqCst) {
                 break;
