@@ -1,4 +1,5 @@
 mod chat_client_tui;
+mod chat_server_tui;
 mod shared;
 
 use cursive::align::HAlign;
@@ -29,18 +30,13 @@ fn show_mode_selection(siv: &mut cursive::Cursive) {
                 "1" => {
                     // Server mode
                     s.pop_layer();
-                    s.add_layer(
-                        Dialog::around(TextView::new("Server mode will be implemented next"))
-                            .title("Coming Soon")
-                            .button("Back", |s| {
-                                s.pop_layer();
-                                show_mode_selection(s);
-                            })
-                            .button("Quit", |s| s.quit()),
-                    );
+                    s.quit(); // Quit the current Cursive instance
+
+                    // Start the server TUI
+                    chat_server_tui::run_server_tui();
                 }
                 "2" => {
-                    // Client mode - Call your chat client TUI
+                    // Client mode
                     s.pop_layer();
                     s.quit(); // Quit the current Cursive instance
 
