@@ -41,20 +41,36 @@ pub fn run_server_tui() {
             });
 
             let output_shutdown = Arc::clone(&thread_shutdown_signal);
+            let async_to_ui_tx_clone = async_to_ui_tx.clone();
             let output_handle = tokio::spawn(async move {
                 while let Some(event) = output_rx.recv().await {
                     if output_shutdown.load(Ordering::SeqCst) {
                         break;
                     }
-                    if async_to_ui_tx.send(event).is_err() {
+                    if async_to_ui_tx_clone.send(event).is_err() {
                         break;
                     }
                 }
             });
 
             // Run the server backend
-            if let Err(e) = run_server_backend(input_rx, output_tx, thread_shutdown_signal).await {
-                eprintln!("Server error: {}", e);
+            match run_server_backend(input_rx, output_tx, thread_shutdown_signal).await {
+                Ok(_) => {
+                    // Server stopped normally
+                }
+                Err(e) => {
+                    // Send error to UI
+                    eprintln!("Server error: {}", e);
+                    let _ = async_to_ui_tx.send(OutputEvent::TextLine(TextLine {
+                        text: format!("Server error: {}\n", e),
+                        color: Some(RED_COLOR.clone()),
+                    }));
+                    let _ = async_to_ui_tx.send(OutputEvent::SystemEvent(
+                        SystemEvent::ConnectionError {
+                            message: format!("Server error: {}", e),
+                        },
+                    ));
+                }
             }
 
             let _ = input_handle.await;
@@ -63,7 +79,7 @@ pub fn run_server_tui() {
     });
 
     // Run the UI in the main thread
-    server_tui(ui_to_async_tx, async_to_ui_rx, shutdown_signal);
+    server_tui(ui_to_async_tx, async_to_ui_rx, shutdown_signal.clone());
 
     // Wait for the async thread to finish
     let _ = async_thread.join();

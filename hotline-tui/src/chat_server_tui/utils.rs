@@ -1,11 +1,14 @@
 use super::imports::*;
 
-fn show_server_setup_dialog(
+pub fn show_server_setup_dialog(
     siv: &mut Cursive,
     input_tx: std_mpsc::Sender<String>,
     content: TextContent,
     quit_signal: Arc<AtomicBool>,
 ) {
+    // Clear existing content before showing setup
+    content.set_content("");
+
     // Create input fields for server configuration
     let chatroom_input = EditView::new().with_name("chatroom").fixed_width(30);
     let port_input = EditView::new()
@@ -50,6 +53,17 @@ fn show_server_setup_dialog(
             if chatroom.trim().is_empty() {
                 s.add_layer(Dialog::info("Please enter a chatroom name").title("Error"));
                 return;
+            }
+
+            // Try to parse port number
+            match port.trim().parse::<u16>() {
+                Ok(_) => {} // Valid port
+                Err(_) => {
+                    s.add_layer(
+                        Dialog::info("Please enter a valid port number (0-65535)").title("Error"),
+                    );
+                    return;
+                }
             }
 
             // Remove the dialog
@@ -162,6 +176,12 @@ pub fn server_tui(
                     view.set_content("");
                 });
             } else {
+                // Send /end command to server
+                let _ = input_tx_clone.send("/end".to_string());
+
+                // Clear the content
+                content_for_input.set_content("");
+
                 // Show server setup dialog again
                 show_server_setup_dialog(
                     s,
@@ -185,43 +205,45 @@ pub fn server_tui(
     let siv_sink_clone = siv.cb_sink().clone();
     let content_clone_for_thread = content_clone.clone();
     let output_shutdown = shutdown_signal.clone();
-    let shutdown_signal_for_thread = shutdown_signal.clone(); // clone again for system event handler
-    let auto_scroll_for_thread = auto_scroll.clone();
+    let shutdown_signal_for_thread = shutdown_signal.clone();
     let input_tx_for_thread = input_tx.clone();
+    let auto_scroll_for_thread = auto_scroll.clone();
 
     let output_thread = thread::spawn(move || {
-        while let Ok(event) = output_rx.recv() {
-            if output_shutdown.load(Ordering::SeqCst) {
-                break;
-            }
-
-            match event {
-                OutputEvent::TextLine(line) => {
-                    print_textline_to_output(
-                        &siv_sink_clone,
-                        &content_clone_for_thread,
-                        line,
-                        &auto_scroll_for_thread,
-                    );
+        while !output_shutdown.load(Ordering::SeqCst) {
+            match output_rx.recv() {
+                Ok(event) => {
+                    match event {
+                        OutputEvent::TextLine(line) => {
+                            print_textline_to_output(
+                                &siv_sink_clone,
+                                &content_clone_for_thread,
+                                line,
+                                &auto_scroll_for_thread,
+                            );
+                        }
+                        OutputEvent::ChatMessage(msg) => {
+                            print_chat_message_to_output(
+                                &siv_sink_clone,
+                                &content_clone_for_thread,
+                                msg,
+                                &auto_scroll_for_thread,
+                            );
+                        }
+                        OutputEvent::SystemEvent(event) => {
+                            // Handle system events
+                            handle_system_event(
+                                &siv_sink_clone,
+                                &content_clone_for_thread,
+                                event,
+                                input_tx_for_thread.clone(),
+                                shutdown_signal_for_thread.clone(),
+                                &auto_scroll_for_thread,
+                            );
+                        }
+                    }
                 }
-                OutputEvent::ChatMessage(msg) => {
-                    print_chat_message_to_output(
-                        &siv_sink_clone,
-                        &content_clone_for_thread,
-                        msg,
-                        &auto_scroll_for_thread,
-                    );
-                }
-                OutputEvent::SystemEvent(event) => {
-                    handle_system_event(
-                        &siv_sink_clone,
-                        &content_clone_for_thread,
-                        event,
-                        input_tx_for_thread.clone(),
-                        shutdown_signal_for_thread.clone(),
-                        &auto_scroll_for_thread,
-                    );
-                }
+                Err(_) => break,
             }
         }
     });
@@ -242,12 +264,9 @@ pub fn server_tui(
 
     // Wait for the output thread to finish
     let _ = output_thread.join();
-
-    // Force exit immediately
-    std::process::exit(0);
 }
 
-fn handle_system_event(
+pub fn handle_system_event(
     siv_sink: &CbSink,
     content: &TextContent,
     event: SystemEvent,
@@ -257,6 +276,7 @@ fn handle_system_event(
 ) {
     let content = content.clone();
     let sink = siv_sink.clone();
+    let input_tx = input_tx.clone();
     let auto_scroll = auto_scroll.clone();
 
     sink.send(Box::new(move |s| {
@@ -307,6 +327,15 @@ fn handle_system_event(
                         });
                     }
                 }
+
+                // Clear content and show server setup dialog again
+                content.set_content("");
+                show_server_setup_dialog(
+                    s,
+                    input_tx.clone(),
+                    content.clone(),
+                    shutdown_signal.clone(),
+                );
             }
             SystemEvent::PromptInput { prompt } => {
                 styled.append_styled(format!("{}\n", prompt), Color::Light(BaseColor::Magenta));
@@ -321,29 +350,15 @@ fn handle_system_event(
                     }
                 }
             }
-            SystemEvent::RateLimit { seconds } => {
-                styled.append_styled(
-                    format!("Client rate limited for {:.1} more seconds\n", seconds),
-                    Color::Light(BaseColor::Red),
-                );
-                content.append(styled);
-
-                // Auto-scroll if enabled
-                if let Ok(scroll) = auto_scroll.lock() {
-                    if *scroll {
-                        s.call_on_name("messages_scroll", |view: &mut ScrollView<TextView>| {
-                            view.scroll_to_bottom();
-                        });
-                    }
-                }
+            SystemEvent::RateLimit { .. } => {
+                // Rate limit events are handled by the backend, no need to show in UI
             }
         }
     }))
     .unwrap();
 }
 
-// Helper function to print text to the output
-fn print_textline_to_output(
+pub fn print_textline_to_output(
     siv_sink: &CbSink,
     content: &TextContent,
     line: TextLine,
@@ -376,8 +391,7 @@ fn print_textline_to_output(
     .unwrap();
 }
 
-// Helper function to print chat messages
-fn print_chat_message_to_output(
+pub fn print_chat_message_to_output(
     siv_sink: &CbSink,
     content: &TextContent,
     msg: ChatMessage,
@@ -418,8 +432,7 @@ fn print_chat_message_to_output(
     .unwrap();
 }
 
-// Helper function to set custom theme
-fn set_custom_theme(siv: &mut cursive::CursiveRunnable) {
+pub fn set_custom_theme(siv: &mut cursive::CursiveRunnable) {
     let mut theme = Theme::default();
     let mut palette = Palette::default();
 

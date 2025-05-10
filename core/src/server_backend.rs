@@ -12,6 +12,7 @@ use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::TcpListener;
 use tokio::sync::{Mutex, broadcast, mpsc};
 
+use crate::serializable_colours::*;
 use crate::types::{ChatMessage, OutputEvent, SystemEvent, TextLine};
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -50,8 +51,8 @@ pub async fn run_server_backend(
                         log_file = Some(file);
                         let _ = output_tx
                             .send(OutputEvent::TextLine(TextLine {
-                                text: format!("Logging enabled. Log file: {}", filename),
-                                color: None,
+                                text: format!("Logging enabled. Log file: {}\n", filename),
+                                color: Some(GREEN_COLOR.clone()),
                             }))
                             .await;
                     }
@@ -69,8 +70,8 @@ pub async fn run_server_backend(
 
     let _ = output_tx
         .send(OutputEvent::TextLine(TextLine {
-            text: format!("Starting server for chatroom '{}' on {}", chatroom, addr),
-            color: None,
+            text: format!("Starting server for chatroom '{}' on {}\n", chatroom, addr),
+            color: Some(GREEN_COLOR.clone()),
         }))
         .await;
 
@@ -84,7 +85,7 @@ pub async fn run_server_backend(
     let _ = output_tx
         .send(OutputEvent::TextLine(TextLine {
             text: "Server running! Waiting for connections...".to_string(),
-            color: None,
+            color: Some(GREEN_COLOR.clone()),
         }))
         .await;
 
