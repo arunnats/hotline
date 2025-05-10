@@ -4,6 +4,20 @@ mod utils;
 pub use imports::*;
 pub use utils::*;
 
+pub fn restart_server_tui(shutdown_signal: Arc<AtomicBool>, siv_cb_sink: cursive::CbSink) {
+    // Signal backend to shut down
+    shutdown_signal.store(true, Ordering::SeqCst);
+
+    // Quit the UI
+    let _ = siv_cb_sink.send(Box::new(|s| s.quit()));
+
+    // Spawn a new thread to restart the TUI after a short delay
+    std::thread::spawn(move || {
+        std::thread::sleep(std::time::Duration::from_millis(200));
+        crate::chat_server_tui::run_server_tui();
+    });
+}
+
 pub fn run_server_tui() {
     // Create a shared shutdown signal
     let shutdown_signal = Arc::new(AtomicBool::new(false));

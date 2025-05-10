@@ -1,4 +1,5 @@
 use super::imports::*;
+use super::restart_server_tui;
 
 pub fn show_server_setup_dialog(
     siv: &mut Cursive,
@@ -165,8 +166,8 @@ pub fn server_tui(
         TextView::new("Enter message (type '/end' to stop server)").h_align(HAlign::Left);
 
     let input_tx_clone = input_tx.clone();
-    let quit_signal = Arc::clone(&shutdown_signal);
-    let content_for_input = content.clone();
+    let shutdown_signal_clone = shutdown_signal.clone();
+    let siv_cb_sink = siv.cb_sink().clone();
 
     let input = EditView::new()
         .on_submit(move |s, text| {
@@ -178,17 +179,8 @@ pub fn server_tui(
             } else {
                 // Send /end command to server
                 let _ = input_tx_clone.send("/end".to_string());
-
-                // Clear the content
-                content_for_input.set_content("");
-
-                // Show server setup dialog again
-                show_server_setup_dialog(
-                    s,
-                    input_tx_clone.clone(),
-                    content_for_input.clone(),
-                    quit_signal.clone(),
-                );
+                // Call restart_server_tui
+                restart_server_tui(shutdown_signal_clone.clone(), siv_cb_sink.clone());
             }
         })
         .with_name("input")
@@ -208,6 +200,7 @@ pub fn server_tui(
     let shutdown_signal_for_thread = shutdown_signal.clone();
     let input_tx_for_thread = input_tx.clone();
     let auto_scroll_for_thread = auto_scroll.clone();
+    let siv_cb_sink_thread = siv.cb_sink().clone();
 
     let output_thread = thread::spawn(move || {
         while !output_shutdown.load(Ordering::SeqCst) {
@@ -239,6 +232,7 @@ pub fn server_tui(
                                 input_tx_for_thread.clone(),
                                 shutdown_signal_for_thread.clone(),
                                 &auto_scroll_for_thread,
+                                siv_cb_sink_thread.clone(),
                             );
                         }
                     }
@@ -270,14 +264,16 @@ pub fn handle_system_event(
     siv_sink: &CbSink,
     content: &TextContent,
     event: SystemEvent,
-    input_tx: std_mpsc::Sender<String>,
+    _input_tx: std_mpsc::Sender<String>,
     shutdown_signal: Arc<AtomicBool>,
     auto_scroll: &Arc<Mutex<bool>>,
+    siv_cb_sink: cursive::CbSink,
 ) {
     let content = content.clone();
     let sink = siv_sink.clone();
-    let input_tx = input_tx.clone();
     let auto_scroll = auto_scroll.clone();
+    let shutdown_signal = shutdown_signal.clone();
+    let siv_cb_sink = siv_cb_sink.clone();
 
     sink.send(Box::new(move |s| {
         let mut styled = StyledString::new();
@@ -328,14 +324,13 @@ pub fn handle_system_event(
                     }
                 }
 
-                // Clear content and show server setup dialog again
-                content.set_content("");
-                show_server_setup_dialog(
-                    s,
-                    input_tx.clone(),
-                    content.clone(),
-                    shutdown_signal.clone(),
-                );
+                // Call restart_server_tui after a brief delay
+                let shutdown_signal = shutdown_signal.clone();
+                let siv_cb_sink = siv_cb_sink.clone();
+                std::thread::spawn(move || {
+                    std::thread::sleep(std::time::Duration::from_secs(2));
+                    restart_server_tui(shutdown_signal, siv_cb_sink);
+                });
             }
             SystemEvent::PromptInput { prompt } => {
                 styled.append_styled(format!("{}\n", prompt), Color::Light(BaseColor::Magenta));
